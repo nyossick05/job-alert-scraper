@@ -31,6 +31,24 @@ KEYWORD_PATTERN = re.compile(
 )
 US_PATTERN = re.compile(r"\b(usa|us|united states)\b")
 
+# Tag name -> pattern that triggers it
+TAG_PATTERNS = {
+    "clearance": re.compile(
+        r"\bclearance\b|top secret|ts/sci|public trust", re.IGNORECASE
+    ),
+    "US citizenship": re.compile(
+        r"\b(u\.?s\.?|united states) citizen", re.IGNORECASE
+    ),
+    "paid": re.compile(r"\bpaid\b|\bstipend\b|\$\s?\d", re.IGNORECASE),
+    "unpaid": re.compile(r"\bunpaid\b", re.IGNORECASE),
+    "remote": re.compile(r"\bremote\b", re.IGNORECASE),
+    "hybrid": re.compile(r"\bhybrid\b", re.IGNORECASE),
+}
+
+
+def extract_tags(text):
+    return [tag for tag, pattern in TAG_PATTERNS.items() if pattern.search(text)]
+
 
 def is_us_job(job):
     location = (job.get("location") or "").lower()
@@ -56,6 +74,7 @@ def fetch_remoteok():
             "url": job.get("url"),
             "location": job.get("location") or "Remote",
             "description": job.get("description") or "",
+            "source": "remoteok",
             "prefiltered": False,
         })
     return jobs
@@ -93,6 +112,7 @@ def fetch_adzuna():
             "url": job.get("redirect_url"),
             "location": (job.get("location") or {}).get("display_name"),
             "description": job.get("description") or "",
+            "source": "adzuna",
             "prefiltered": True,
         })
     return jobs
@@ -136,6 +156,7 @@ def fetch_usajobs():
                 "url": posting.get("PositionURI"),
                 "location": posting.get("PositionLocationDisplay"),
                 "description": details.get("JobSummary") or posting.get("QualificationSummary") or "",
+                "source": "usajobs",
                 "prefiltered": False,
             })
     return jobs
@@ -180,7 +201,9 @@ def filter_jobs(jobs):
             "company": job["company"],
             "url": job["url"],
             "location": job["location"],
+            "source": job["source"],
             "matched_keyword": matched,
+            "tags": extract_tags(job["title"] + " " + job["description"]),
         })
     return matches
 
@@ -192,10 +215,13 @@ def save_jobs(matches):
     new_jobs = []
     for job in matches:
         cur.execute("""
-            INSERT INTO jobs (title, company, url, matched_keyword)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO jobs (title, company, url, matched_keyword, location, source, tags)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (url) DO NOTHING
-        """, (job["title"], job["company"], job["url"], job["matched_keyword"]))
+        """, (
+            job["title"], job["company"], job["url"], job["matched_keyword"],
+            job["location"], job["source"], job["tags"],
+        ))
 
         if cur.rowcount > 0:
             new_jobs.append(job)
@@ -210,13 +236,15 @@ def notify_discord(new_jobs):
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
 
     for job in new_jobs:
-        message = {
-            "content": (
-                f"**New internship match!** {job['title']} at {job['company']}\n"
-                f"{job['location']}\n{job['url']}"
-            )
-        }
-        requests.post(webhook_url, json=message)
+        parts = [
+            f"**New internship match!** {job['title']} at {job['company']}",
+            f"{job['location']} ({job['source']})",
+        ]
+        if job["tags"]:
+            parts.append("🏷 " + " · ".join(job["tags"]))
+        parts.append(job["url"])
+
+        requests.post(webhook_url, json={"content": "\n".join(parts)})
         time.sleep(1)  # Discord rate-limits rapid-fire webhook posts
 
 

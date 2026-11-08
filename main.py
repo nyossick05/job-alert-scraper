@@ -48,7 +48,8 @@ def get_jobs():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, title, company, url, matched_keyword, date_found
+        SELECT id, title, company, url, matched_keyword,
+               location, source, tags, date_found
         FROM jobs
         ORDER BY date_found DESC
         LIMIT 50
@@ -65,7 +66,10 @@ def get_jobs():
             "company": row[2],
             "url": row[3],
             "matched_keyword": row[4],
-            "date_found": row[5],
+            "location": row[5],
+            "source": row[6],
+            "tags": row[7],
+            "date_found": row[8],
         }
         for row in rows
     ]

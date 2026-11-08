@@ -14,6 +14,9 @@ cur.execute("""
         company TEXT,
         url TEXT UNIQUE NOT NULL,
         matched_keyword TEXT,
+        location TEXT,
+        source TEXT,
+        tags TEXT[] DEFAULT '{}',
         date_found TIMESTAMP DEFAULT NOW()
     );
 """)
