@@ -7,12 +7,28 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-KEYWORDS = ["python", "backend", "django", "flask", "fastapi"]
+# Words that make a job "CS-related" (checked against title + description)
+KEYWORDS = [
+    "software", "developer", "development", "engineer", "engineering",
+    "python", "java", "javascript", "backend", "frontend", "full stack",
+    "web", "data", "machine learning", "cybersecurity", "security",
+    "cloud", "devops", "computer", "computer science",
+    "information technology", "ai",
+]
 
-# Change these to where YOU want to work (a city, state, or zip all work)
-SEARCH_LOCATION = "Virginia"
-SEARCH_DISTANCE_KM = 80
+# Where you want to work
+SEARCH_LOCATION = "Washington, DC"
+SEARCH_DISTANCE_KM = 50      # Adzuna uses kilometers
+USAJOBS_RADIUS_MILES = 30    # USAJobs uses miles
+USAJOBS_SEARCH_TERMS = ["intern", "student trainee", "pathways"]
 
+# Word-boundary patterns, so "intern" doesn't match "internal"
+INTERN_PATTERN = re.compile(
+    r"\b(intern|interns|internship|internships|co-op|student trainee|pathways)\b"
+)
+KEYWORD_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in KEYWORDS) + r")\b"
+)
 US_PATTERN = re.compile(r"\b(usa|us|united states)\b")
 
 
@@ -55,7 +71,8 @@ def fetch_adzuna():
     params = {
         "app_id": app_id,
         "app_key": app_key,
-        "what_or": " ".join(KEYWORDS),
+        "what_or": "intern internship",
+        "category": "it-jobs",
         "where": SEARCH_LOCATION,
         "distance": SEARCH_DISTANCE_KM,
         "results_per_page": 50,
@@ -81,11 +98,56 @@ def fetch_adzuna():
     return jobs
 
 
+def fetch_usajobs():
+    api_key = os.getenv("USAJOBS_API_KEY")
+    email = os.getenv("USAJOBS_EMAIL")
+    if not api_key or not email:
+        print("USAJobs keys missing, skipping USAJobs")
+        return []
+
+    headers = {
+        "User-Agent": email,
+        "Authorization-Key": api_key,
+    }
+
+    jobs = []
+    for search_term in USAJOBS_SEARCH_TERMS:
+        params = {
+            "Keyword": search_term,
+            "LocationName": SEARCH_LOCATION,
+            "Radius": USAJOBS_RADIUS_MILES,
+            "ResultsPerPage": 50,
+        }
+        response = requests.get(
+            "https://data.usajobs.gov/api/search",
+            headers=headers,
+            params=params,
+            timeout=30,
+        )
+        response.raise_for_status()
+
+        items = response.json().get("SearchResult", {}).get("SearchResultItems", [])
+        for item in items:
+            posting = item.get("MatchedObjectDescriptor") or {}
+            details = (posting.get("UserArea") or {}).get("Details") or {}
+            jobs.append({
+                "title": posting.get("PositionTitle") or "",
+                "company": posting.get("OrganizationName"),
+                "url": posting.get("PositionURI"),
+                "location": posting.get("PositionLocationDisplay"),
+                "description": details.get("JobSummary") or posting.get("QualificationSummary") or "",
+                "prefiltered": False,
+            })
+    return jobs
+
+
 def fetch_jobs():
     all_jobs = []
-    for source in (fetch_remoteok, fetch_adzuna):
+    for source in (fetch_remoteok, fetch_adzuna, fetch_usajobs):
         try:
-            all_jobs.extend(source())
+            found = source()
+            print(f"{source.__name__}: fetched {len(found)} jobs")
+            all_jobs.extend(found)
         except Exception as e:
             print(f"{source.__name__} failed: {e}")
     return all_jobs
@@ -100,15 +162,17 @@ def filter_jobs(jobs):
         title = job["title"].lower()
         description = job["description"].lower()
 
-        matched = None
-        for keyword in KEYWORDS:
-            if keyword in title or keyword in description:
-                matched = keyword
-                break
+        # Check 1: is it an internship? (title only)
+        if not INTERN_PATTERN.search(title):
+            continue
 
-        if matched is None and job["prefiltered"]:
-            matched = "search match"
-        if matched is None:
+        # Check 2: is it CS-related?
+        found = KEYWORD_PATTERN.search(title + " " + description)
+        if found:
+            matched = found.group(1)
+        elif job["prefiltered"]:
+            matched = "IT category match"
+        else:
             continue
 
         matches.append({
@@ -148,7 +212,7 @@ def notify_discord(new_jobs):
     for job in new_jobs:
         message = {
             "content": (
-                f"**New job match!** {job['title']} at {job['company']}\n"
+                f"**New internship match!** {job['title']} at {job['company']}\n"
                 f"{job['location']}\n{job['url']}"
             )
         }
